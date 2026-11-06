@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+	<AssemblyName>CrowdControl</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>CrowdControl</RootNamespace>
+    <ModName>KadenKat.CrowdControl</ModName>
+    <ModVersion>0.0.1</ModVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ModZipPath>release\$(ModName)-$(ModVersion).zip</ModZipPath>
+  </PropertyGroup>
+  <ItemGroup>
+	  <Reference Include="ConnectorLib.JSON">
+		  <HintPath>ConnectorLib.JSON.dll</HintPath>
+		  <SpecificVersion>False</SpecificVersion>
+	  </Reference>
+    <PackageReference Include="FortRise.Configuration" Version="1.5.6" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Content/**/*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

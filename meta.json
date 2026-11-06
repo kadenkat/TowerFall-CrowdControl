@@ -1,0 +1,14 @@
+{
+	"name": "KadenKat.CrowdControl",
+	"displayName": "Crowd Control",
+	"version": "0.0.1",
+	"author": "KadenKat",
+	"description": "Crowd Control integration for TowerFall.",
+	"dll": "CrowdControl.dll",
+	"dependencies": [
+		{
+			"name": "FortRise",
+			"version": "5.0.0"
+		}
+	]
+}

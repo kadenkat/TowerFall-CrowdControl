@@ -1,0 +1,10 @@
+obj/
+bin/
+0Harmony.*
+EightPlayerMod
+.vs/
+Properties/
+*.user
+
+.vscode/
+release/
