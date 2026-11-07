@@ -28,6 +28,8 @@ public abstract class Effect
     protected Level? Level => CrowdControlHelper.Instance.Level;
     protected Scene? Scene => CrowdControlHelper.Instance.Scene;
 
+    protected List<Player>? Players => CrowdControlHelper.Instance.Players;
+
     public virtual EffectType Type => EffectType.Instant;
 
     public EffectRequest? CurrentRequest { get; private set; }

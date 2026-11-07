@@ -7,7 +7,6 @@ using Microsoft.Xna.Framework;
 using Monocle;
 using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using TowerFall;
 
@@ -15,23 +14,28 @@ namespace CrowdControl;
 
 public class CrowdControlHelper
 {
+    private static Type[] RegisteredEffects = [
+        typeof(EffectKill),
+        typeof(GiveShield),
+        typeof(EffectRevive),
+    ];
+
     private static readonly TimeSpan START_WAIT_INTERVAL = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan MAX_START_WAIT = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MAX_EFFECT_LIFETIME = TimeSpan.FromMinutes(30);
     private const float GAME_STATUS_UPDATE_INTERVAL = 1f;
 
-    private readonly ConcurrentDictionary<uint, DateTimeOffset> _allow_timed_responses = new();
+    private readonly ConcurrentDictionary<uint, DateTimeOffset> allowTimedResponses = new();
     private float gameStatusUpdateTimer = 0f;
 
     private GameState? lastGameState;
-    private bool effectsLoaded;
 
     private readonly SimpleTCPClient client;
 
+    public Camera? Camera;
     public Level? Level;
     public Scene? Scene;
-
-    public List<Entity>? Players => Level?.Players;
+    public List<Player>? Players;
 
     public bool InLevel { get => Level != null; }
 
@@ -55,8 +59,15 @@ public class CrowdControlHelper
 
         context.Events.Level.LevelEntered += Level_LevelEntered;
         context.Events.Level.LevelExited += Level_LevelExited;
+        context.Events.RoundLogic.LevelLoadFinish += RoundLogic_LevelLoadFinish;
 
         Version = new VersionNumber(modContent.Metadata.Version.ToString());
+        LoadEffects();
+    }
+
+    private void RoundLogic_LevelLoadFinish(object? sender, RoundLogic e)
+    {
+        Logger.LogDebug("RoundLogic_LevelLoadFinish");
     }
 
     public static void Create(IModContent modContent, IModuleContext context)
@@ -81,93 +92,111 @@ public class CrowdControlHelper
             UpdateGameState(0);
             gameStatusUpdateTimer = 0f;
         }
-        if (!InLevel) return;
-        Logger.LogDebug($"In level.");
 
-        if (Level?.Players != null)
+        Scene = Level;
+        Camera = Level?.Camera;
+        Players?.Clear();
+
+        if (Level != null)
         {
-            for (int i = Level.Players.Count - 1; i >= 0; i--)
+            foreach (var e in Level.Players)
             {
-                if (Level.Players[i] is Player player)
+                if (e is Player p)
+                    Players!.Add(p);
+            }
+        }
+
+        foreach (Effect action in Active)
+        {
+            if (!action.Active) continue;
+            try
+            {
+                switch (action.Type)
                 {
-                    player.HasShield = true;
+                    case Effect.EffectType.Timed:
+                        TimeSpan timeRemaining = action.Duration - action.Elapsed;
+                        if (timeRemaining > TimeSpan.Zero)
+                        {
+                            action.Update(gameTime);
+                            if ((Level == null) || action.Paused)
+                            {
+                                if (action.IsTimerTicking)
+                                {
+                                    action.IsTimerTicking = false;
+                                    Respond(action.CurrentRequest, EffectStatus.Paused, timeRemaining).Forget();
+                                }
+                                action.Elapsed -= gameTime.ElapsedGameTime;
+                            }
+                            else if (!action.IsTimerTicking)
+                            {
+                                action.IsTimerTicking = true;
+                                Respond(action.CurrentRequest, EffectStatus.Resumed, timeRemaining).Forget();
+                            }
+                        }
+                        else action.TryStop();
+                        break;
+                    case Effect.EffectType.BidWar:
+                        action.Update(gameTime);
+                        break;
+                    default:
+                        action.Update(gameTime);
+                        action.TryStop();
+                        break;
                 }
             }
+            catch (Exception e) { Logger.LogError(e, e.Message); }
+        }
+
+        //while (_gui_messages.Count > MAX_GUI_MESSAGES) { _gui_messages.TryDequeue(out _); }
+        //foreach (var gm in _gui_messages) { gm.elapsed += gameTime.ElapsedGameTime; }
+        //while (_gui_messages.TryPeek(out var g) && (g.elapsed > MAX_GUI_MESSAGE_TIME)) { _gui_messages.TryDequeue(out _); }
+    }
+
+    private void LoadEffects()
+    {
+        foreach (Type type in RegisteredEffects)
+        {
+            if (type.IsAbstract) continue;
+
+            if (typeof(Effect).IsAssignableFrom(type))
+            {
+                Effect action = (Effect)Activator.CreateInstance(type)!;
+                action.Load();
+                Effects.Add(action.Code, action);
+            }
+
+/*            if (typeof(Metadata.Metadata).IsAssignableFrom(type))
+            {
+                Metadata.Metadata metadata = (Metadata.Metadata)Activator.CreateInstance(type)!;
+                Metadata.Add(metadata.Key, metadata);
+            }*/
         }
     }
 
     private static void TFGame_Update_Postfix(GameTime gameTime)
     {
         Instance.Update(gameTime);
-        //Log.Message(_game_status_update_timer);
-
-
-
-        /*        TryLoadEffects();
-                if (m_effectsLoaded) foreach (Effect action in Active)
-                {
-                    if (!action.Active) continue;
-                    try
-                    {
-                        switch (action.Type)
-                        {
-                            case Effect.EffectType.Timed:
-                                TimeSpan timeRemaining = action.Duration - action.Elapsed;
-                                if (timeRemaining > TimeSpan.Zero)
-                                {
-                                    action.Update(gameTime);
-                                    if ((Level == null) || Level.InCutscene || action.Paused)
-                                    {
-                                        if (action.IsTimerTicking)
-                                        {
-                                            action.IsTimerTicking = false;
-                                            Respond(action.CurrentRequest, EffectStatus.Paused, timeRemaining).Forget();
-                                        }
-                                        action.Elapsed -= gameTime.ElapsedGameTime;
-                                    }
-                                    else if (!action.IsTimerTicking)
-                                    {
-                                        action.IsTimerTicking = true;
-                                        Respond(action.CurrentRequest, EffectStatus.Resumed, timeRemaining).Forget();
-                                    }
-                                }
-                                else action.TryStop();
-                                break;
-                            case Effect.EffectType.BidWar:
-                                action.Update(gameTime);
-                                break;
-                            default:
-                                action.Update(gameTime);
-                                action.TryStop();
-                                break;
-                        }
-                    }
-                    catch (Exception e) { Log.Error(e); }
-                }
-
-                while (_gui_messages.Count > MAX_GUI_MESSAGES) { _gui_messages.TryDequeue(out _); }
-                foreach (var gm in _gui_messages) { gm.elapsed += gameTime.ElapsedGameTime; }
-                while (_gui_messages.TryPeek(out var g) && (g.elapsed > MAX_GUI_MESSAGE_TIME)) { _gui_messages.TryDequeue(out _); }*/
     }
 
     private static void Level_LevelExited(object? sender, TowerFall.Level e)
     {
+        Logger.LogDebug("Level_LevelExited");
         Instance.Level = null;
         Instance.Scene = null;
     }
 
     private static void Level_LevelEntered(object? sender, TowerFall.Level e)
     {
+        Logger.LogDebug("Level_LevelEntered");
         Instance.Level = e;
         Instance.Scene = e;
+        Instance.Players = e.Players.Cast<Player>()?.ToList();
     }
 
     private void ClientRequestReceived(SimpleJSONRequest request)
     {
         if (request is EffectRequest effectRequest)
         {
-            Logger.LogDebug($"EffectRequest received. Type: {effectRequest.type}, Code: {effectRequest.code}");
-
             switch (effectRequest.type)
             {
                 case RequestType.EffectTest:
@@ -184,56 +213,23 @@ public class CrowdControlHelper
             }
         }
         else if (request.type == RequestType.GameUpdate)
-        {
-            UpdateGameState(request.id, GameState.InLevel, force: true);
-        }
+            UpdateGameState(request.id, true);
         else if (request.type == RequestType.Version)
-        {
-            Logger.LogDebug($"Got a version request. Our version: {Version.ToString()}");
             client.Respond(new VersionResponse(Version) { id = request.id }).Forget();
-        }
     }
 
     private void ClientConnected()
     {
     }
 
-    private void TryLoadEffects()
-    {
-        if (effectsLoaded) return;
-        //this may be GetEntryAssembly or GetExecutingAssembly depending on how the modloader works
-        foreach (Type type in Assembly.GetEntryAssembly().GetTypes())
-        {
-            //Log.Debug($"Loaded type: {type.Name}");
-            if (type.IsAbstract) { continue; }
+    //in some other situation we might do a more advanced strategy where certain effects might
+    //want to include additional fields, but we're going to send these for all requests
+    private Dictionary<string, DataResponse> GetMetadata()
+        => Metadata.Select(m => new KeyValuePair<string, DataResponse>(m.Key, m.Value.TryGetValue())).ToDictionary();
 
-            if (typeof(Effect).IsAssignableFrom(type))
-            {
-                Effect action = default;// (Effect)type.GetConstructor(Everest._EmptyTypeArray).Invoke(Everest._EmptyObjectArray);
-                action.Load();
-                //Log.Debug($"Imported effect type: {type.Name}");
-                Effects.Add(action.Code, action);
-            }
-
-            if (typeof(Metadata.Metadata).IsAssignableFrom(type))
-            {
-                Metadata.Metadata metadata = (Metadata.Metadata)type.GetConstructor(Type.EmptyTypes).Invoke([]);
-                //Log.Debug($"Imported metadata type: {type.Name}");
-                Metadata.Add(metadata.Key, metadata);
-            }
-        }
-        effectsLoaded = true;
-    }
-
-    // Not-found should send a response, not just log. Otherwise the viewer waits out the timeout.
-    // For a code the mod doesn't implement, use EffectResponse.Unavailable(id, message).
-    // Unavailable is same as Failure, but the effect is no longer available for the rest
-    // of the game, so the viewer gets refunded and the effect is disabled.
-    // For "not right now" situations (in a menu, archer dead), use Retry. That's the "normal" failure response.
     private void HandleEffectStart(EffectRequest request)
     {
         Logger.LogDebug($"Got an effect start request [{request.id}:{request.code}].");
-
         if (!Effects.TryGetValue(request.code, out Effect effect))
         {
             Logger.LogError($"Effect {request.code} not found. Available effects: {string.Join(", ", Effects.Keys)}");
@@ -241,7 +237,6 @@ public class CrowdControlHelper
             Respond(request, EffectStatus.Unavailable).Forget();
             return;
         }
-
 
         if (((request.parameters as JArray)?.Count ?? 0) < effect.ParameterTypes.Length)
         {
@@ -255,7 +250,7 @@ public class CrowdControlHelper
         }
         if (!effect.TryStart(request))
         {
-            //Logger.LogDebug($"Effect {request.code} could not start.");
+            //Log.Debug($"Effect {request.code} could not start.");
             Respond(request, EffectStatus.Retry).Forget();
             return;
         }
@@ -263,11 +258,6 @@ public class CrowdControlHelper
         Logger.LogDebug($"Effect {request.code} started.");
         Respond(request, EffectStatus.Success, ((effect.Type == Effect.EffectType.Timed) ? effect.Duration : null)).Forget();
     }
-
-    //in some other situation we might do a more advanced strategy where certain effects might
-    //want to include additional fields, but we're going to send these for all requests
-    private Dictionary<string, DataResponse> GetMetadata()
-        => Metadata.Select(m => new KeyValuePair<string, DataResponse>(m.Key, m.Value.TryGetValue())).ToDictionary();
 
     private void HandleEffectStop(EffectRequest request)
     {
@@ -278,16 +268,17 @@ public class CrowdControlHelper
             //could not find the effect
             return;
         }
-        /*
-                if (!effect.TryStop())
-                {
-                    Logger.LogDebug($"Effect {request.code} failed to stop.");
-                    return;
-                }*/
+
+        if (!effect.TryStop())
+        {
+            Logger.LogDebug($"Effect {request.code} failed to stop.");
+            return;
+        }
 
         Logger.LogDebug($"Effect {request.code} stopped.");
         Respond(request, EffectStatus.Success).Forget();
     }
+
     private void HandleEffectTest(EffectRequest request)
     {
         Logger.LogDebug($"Got an effect test request [{request.id}:{request.code}].");
@@ -299,23 +290,21 @@ public class CrowdControlHelper
             return;
         }
 
+        if (((request.parameters as JArray)?.Count ?? 0) < effect.ParameterTypes.Length)
+        {
+            Respond(request, EffectStatus.Failure).Forget();
+            return;
+        }
+
+        if (!effect.IsReady())
+        {
+            //Log.Debug($"Effect {request.code} was not ready.");
+            Respond(request, EffectStatus.Retry).Forget();
+            return;
+        }
+
         Logger.LogDebug($"Effect {request.code} is ready.");
-
-        /*        if (((request.parameters as JArray)?.Count ?? 0) < effect.ParameterTypes.Length)
-                {
-                    Respond(request, EffectStatus.Failure).Forget();
-                    return;
-                }*/
-
-        /*        if (!effect.IsReady())
-                {
-                    //Logger.LogDebug($"Effect {request.code} was not ready.");
-                    Respond(request, EffectStatus.Retry).Forget();
-                    return;
-                }
-
-                Logger.LogDebug($"Effect {request.code} is ready.");
-                Respond(request, EffectStatus.Success, ((effect.Type == Effect.EffectType.Timed) ? effect.Duration : null)).Forget();*/
+        Respond(request, EffectStatus.Success, ((effect.Type == Effect.EffectType.Timed) ? effect.Duration : null)).Forget();
     }
 
 
@@ -371,17 +360,17 @@ public class CrowdControlHelper
     {
         if (result == EffectStatus.Success)
         {
-            _allow_timed_responses[request.id] = DateTimeOffset.UtcNow;
+            allowTimedResponses[request.id] = DateTimeOffset.UtcNow;
             return false;
         }
         if (result is not (EffectStatus.Paused or EffectStatus.Resumed or EffectStatus.Finished)) return false;
-        if (!_allow_timed_responses.TryGetValue(request.id, out DateTimeOffset setOn)) return true;
+        if (!allowTimedResponses.TryGetValue(request.id, out DateTimeOffset setOn)) return true;
         if ((DateTimeOffset.UtcNow - setOn) > MAX_EFFECT_LIFETIME)
         {
-            _allow_timed_responses.TryRemove(request.id, out _);
+            allowTimedResponses.TryRemove(request.id, out _);
             return true;
         }
-        _allow_timed_responses[request.id] = DateTimeOffset.UtcNow;
+        allowTimedResponses[request.id] = DateTimeOffset.UtcNow;
         return false;
     }
 }
